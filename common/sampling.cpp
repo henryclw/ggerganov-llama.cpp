@@ -274,12 +274,16 @@ void common_perf_print(const struct llama_context * ctx, const struct common_sam
     }
 }
 
-llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_context * ctx, int idx, bool grammar_first) {
+llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_context * ctx, int idx, bool grammar_first, bool return_raw) {
     gsmpl->set_logits(ctx, idx);
 
     auto & grmr  = gsmpl->grmr;
     auto & chain = gsmpl->chain;
     auto & cur_p = gsmpl->cur_p; // initialized by set_logits
+
+    if (return_raw) {
+        return 0;
+    }
 
     if (grammar_first) {
         llama_sampler_apply(grmr, &cur_p);

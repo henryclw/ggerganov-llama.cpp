@@ -829,9 +829,26 @@ struct server_context {
         slot.params.n_discard           = json_value(data, "n_discard",          default_params.n_discard);
         slot.sparams.seed               = json_value(data, "seed",               default_sparams.seed);
         slot.sparams.n_probs            = json_value(data, "n_probs",            default_sparams.n_probs);
+        slot.sparams.evaluate_string    = json_value(data, "evaluate_string",    default_sparams.evaluate_string);
+        // init evaluate_token from evaluate_string
+//        slot.sparams.evaluate_token     = json_value(data, "evaluate_token",     default_sparams.evaluate_token);
         slot.sparams.min_keep           = json_value(data, "min_keep",           default_sparams.min_keep);
       //slot.params.t_max_prompt_ms     = json_value(data, "t_max_prompt_ms",    default_params.t_max_prompt_ms); // TODO: implement
         slot.params.t_max_predict_ms    = json_value(data, "t_max_predict_ms",   default_params.t_max_predict_ms);
+
+        // init evaluate_token from evaluate_string
+        if (!slot.sparams.evaluate_string.empty()) {
+            slot.sparams.evaluate_token = tokenize_mixed(ctx, slot.sparams.evaluate_string, false, false);
+            LOG_INF("turn evaluate_string into evaluate_token\n");
+        }
+        // parse evaluate_token
+        std::reverse(slot.sparams.evaluate_token.begin(), slot.sparams.evaluate_token.end());
+        if (!slot.sparams.evaluate_token.empty() && slot.params.n_predict > slot.sparams.evaluate_token.size()) {
+//            LOG_INF("slot.params.n_predict is %d\n", slot.params.n_predict);
+            slot.params.n_predict = slot.sparams.evaluate_token.size();
+//            LOG_INF("slot.sparams.evaluate_token.size() is %d\n", slot.sparams.evaluate_token.size());
+//            LOG_INF("slot.params.n_predict is %d\n", slot.params.n_predict);
+        }
 
         if (slot.sparams.dry_base < 1.0f)
         {
@@ -1258,7 +1275,7 @@ struct server_context {
             {"index",               slot.index},
         };
 
-        if (slot.sparams.n_probs > 0) {
+        if (slot.sparams.n_probs > 0 || !slot.sparams.evaluate_string.empty()) {
             std::vector<completion_token_output> probs;
             if (!slot.params.stream && slot.stopped_word) {
                 const llama_tokens stop_word_toks = common_tokenize(ctx, slot.stopping_word, false);
@@ -2173,26 +2190,40 @@ struct server_context {
                 }
 
                 completion_token_output result;
-                const llama_token id = common_sampler_sample(slot.smpl, ctx, slot.i_batch - i);
+                if (slot.sparams.evaluate_token.empty()) {
+                    const llama_token id = common_sampler_sample(slot.smpl, ctx, slot.i_batch - i);
+                    common_sampler_accept(slot.smpl, id, true);
+                    result.tok = id;
+                    const auto * cur_p = common_sampler_get_candidates(slot.smpl);
+                    for (size_t i = 0; i < (size_t) slot.sparams.n_probs; ++i) {
+                        result.probs.push_back({cur_p->data[i].id, cur_p->data[i].logit});
+                    }
+                } else {
 
-                common_sampler_accept(slot.smpl, id, true);
+                    const llama_token eval_tok = slot.sparams.evaluate_token.back();
+                    common_sampler_accept(slot.smpl, eval_tok, true);
+                    result.tok = eval_tok;
+
+                    const llama_token id = common_sampler_sample(slot.smpl, ctx, slot.i_batch - i, false, true);
+                    llama_token_data_array * cur_p = common_sampler_get_candidates(slot.smpl);
+                    result.probs.push_back({cur_p->data[eval_tok].id, cur_p->data[eval_tok].logit});
+
+                    if (slot.sparams.n_probs > 0) {
+                        common_sampler_sample(slot.smpl, ctx, slot.i_batch - i, false, false);
+                        cur_p = common_sampler_get_candidates(slot.smpl);
+                        for (size_t i = 0; i < (size_t) slot.sparams.n_probs; ++i) {
+                            result.probs.push_back({cur_p->data[i].id, cur_p->data[i].logit});
+                        }
+                    }
+
+                    slot.sparams.evaluate_token.pop_back();
+                }
 
                 slot.n_decoded += 1;
                 if (slot.n_decoded == 1) {
                     slot.t_start_generation = ggml_time_us();
                     slot.t_prompt_processing = (slot.t_start_generation - slot.t_start_process_prompt) / 1e3;
                     metrics.on_prompt_eval(slot);
-                }
-
-                result.tok = id;
-
-                const auto * cur_p = common_sampler_get_candidates(slot.smpl);
-
-                for (size_t i = 0; i < (size_t) slot.sparams.n_probs; ++i) {
-                    result.probs.push_back({
-                        cur_p->data[i].id,
-                        i >= cur_p->size ? 0.0f : cur_p->data[i].p,
-                    });
                 }
 
                 if (!process_token(result, slot)) {

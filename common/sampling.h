@@ -58,7 +58,7 @@ void common_perf_print(const struct llama_context * ctx, const struct common_sam
 // if grammar_first is true, the grammar is applied before the samplers (slower)
 // useful in cases where all the resulting candidates (not just the sampled one) must fit the grammar
 //
-llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_context * ctx, int idx, bool grammar_first = false);
+llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_context * ctx, int idx, bool grammar_first = false, bool return_raw=false);
 
 uint32_t common_sampler_get_seed(const struct common_sampler * gsmpl);
 

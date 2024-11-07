@@ -132,6 +132,9 @@ struct common_sampler_params {
     bool    ignore_eos         = false;
     bool    no_perf            = false; // disable performance metrics
 
+    std::vector<llama_token> evaluate_token = {};
+    std::string evaluate_string;
+
     std::vector<std::string> dry_sequence_breakers = {"\n", ":", "\"", "*"};     // default sequence breakers for DRY
 
 
