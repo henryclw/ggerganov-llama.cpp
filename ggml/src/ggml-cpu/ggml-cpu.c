@@ -1469,8 +1469,12 @@ static void ggml_vec_dot_bf16(int n, float * restrict s, size_t bs, ggml_bf16_t 
     sumf += (ggml_float)_mm512_reduce_add_ps(c2);
 
 #undef LOAD
-#elif defined(__AVX2__)
+#elif defined(__AVX2__) || defined(__AVX__)
+#if defined(__AVX2__)
 #define LOAD(p) _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i *)(p))), 16))
+#else
+#define LOAD(p) _mm256_castsi256_ps(_mm256_insertf128_si256(_mm256_castsi128_si256(_mm_slli_epi32(_mm_cvtepu16_epi32(_mm_loadu_si128((const __m128i *)(p))), 16)), (_mm_slli_epi32(_mm_cvtepu16_epi32(_mm_bsrli_si128(_mm_loadu_si128((const __m128i *)(p)), 8)), 16)), 1))
+#endif
     __m256 c1 = _mm256_setzero_ps();
     __m256 c2 = _mm256_setzero_ps();
     __m256 c3 = _mm256_setzero_ps();
@@ -12212,11 +12216,16 @@ static void ggml_compute_forward_opt_step_adamw_f32(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst) {
 
-    const struct ggml_tensor * src0        = dst->src[0];
-    const struct ggml_tensor * src0_grad   = dst->src[1];
-    const struct ggml_tensor * src0_grad_m = dst->src[2];
-    const struct ggml_tensor * src0_grad_v = dst->src[3];
+    const struct ggml_tensor * src0         = dst->src[0];
+    const struct ggml_tensor * src0_grad    = dst->src[1];
+    const struct ggml_tensor * src0_grad_m  = dst->src[2];
+    const struct ggml_tensor * src0_grad_v  = dst->src[3];
+    const struct ggml_tensor * adamw_params = dst->src[4];
+
     GGML_ASSERT(ggml_are_same_shape(src0, src0_grad));
+    GGML_ASSERT(ggml_are_same_shape(src0, src0_grad_m));
+    GGML_ASSERT(ggml_are_same_shape(src0, src0_grad_v));
+    GGML_ASSERT(ggml_nelements(adamw_params) == 7);
 
     const int ith = params->ith;
     const int nth = params->nth;
@@ -12233,16 +12242,14 @@ static void ggml_compute_forward_opt_step_adamw_f32(
     const int ir0 = dr*ith;
     const int ir1 = MIN(ir0 + dr, nr);
 
-    /* const float   gnorm = 1.0f; */
-    int64_t       iter;   memcpy(&iter, &dst->op_params[0], sizeof(int64_t));
-    const float   alpha = ggml_get_op_params_f32(dst, 2);
-    const float   beta1 = ggml_get_op_params_f32(dst, 3);
-    const float   beta2 = ggml_get_op_params_f32(dst, 4);
-    const float   eps   = ggml_get_op_params_f32(dst, 5);
-    const float   wd    = ggml_get_op_params_f32(dst, 6);
-
-    const float beta1h  = alpha/(1.0f - powf(beta1, iter));
-    const float beta2h  =  1.0f/(1.0f - powf(beta2, iter));
+    const float * adamw_params_ptr = ggml_get_data_f32(adamw_params);
+    const float alpha  = adamw_params_ptr[0];
+    const float beta1  = adamw_params_ptr[1];
+    const float beta2  = adamw_params_ptr[2];
+    const float eps    = adamw_params_ptr[3];
+    const float wd     = adamw_params_ptr[4];
+    const float beta1h = adamw_params_ptr[5];
+    const float beta2h = adamw_params_ptr[6];
 
     for (int ir = ir0; ir < ir1; ++ir) {
         const int64_t i03 = ir/(ne02*ne01);
@@ -12266,17 +12273,9 @@ static void ggml_compute_forward_opt_step_adamw_f32(
             // The weight decay is applied independently of the Adam momenta m and v.
             // This is NOT equivalent to l2 regularization that adds w[i00]*w[i00] to the loss.
             // See: https://arxiv.org/pdf/1711.05101v3.pdf
-            w[i00] = w[i00]*(1.0f - alpha*wd) - mh/vh;
+            w[i00] = w[i00]*(1.0f - alpha*wd) - alpha*mh/vh;
         }
     }
-
-    ggml_barrier(params->threadpool);
-    if (ith != 0) {
-        return;
-    }
-
-    iter++;
-    memcpy(&dst->op_params[0], &iter, sizeof(int64_t));
 }
 
 static void ggml_compute_forward_opt_step_adamw(
