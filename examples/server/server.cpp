@@ -293,7 +293,7 @@ struct server_task {
         // init eval_tokens from eval_str
         if (params.evaluate.eval_tokens.empty() && !params.evaluate.eval_str.empty()) {
 //            params.evaluate.eval_tokens = std::deque<llama_token>(tokenize_mixed(ctx, params.evaluate.eval_str, false, false));
-            std::vector<llama_token> temp = tokenize_mixed(ctx, params.evaluate.eval_str, false, false);
+            std::vector<llama_token> temp = tokenize_mixed(vocab, params.evaluate.eval_str, false, false);
             params.evaluate.eval_tokens = std::deque<llama_token> (temp.begin(), temp.end());
             params.n_predict = params.evaluate.eval_tokens.size();
 //            std::reverse(params.evaluate.eval_tokens.begin(), params.evaluate.eval_tokens.end());
@@ -3300,7 +3300,7 @@ struct server_context {
                     std::vector<llama_token_data> cur = get_token_probabilities(ctx, tok_idx);
 //                    LOG_INF("L3042, cur.size() is %d\n", cur.size());
 //                    LOG_INF("L3042, result.tok is %d\n", result.tok);
-                    size_t n_vocab = llama_n_vocab(llama_get_model(ctx));
+                    size_t n_vocab = llama_vocab_n_tokens(vocab);
                     // set probability for sampled token
                     for (size_t j = 0; i < n_vocab; j++) {
                         // set probability for sampled token
