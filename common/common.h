@@ -4,6 +4,7 @@
 
 #include "llama.h"
 
+#include <deque>
 #include <string>
 #include <vector>
 #include <sstream>
@@ -172,6 +173,11 @@ struct common_params_speculative {
     struct cpu_params cpuparams_batch;
 
     std::string model = ""; // draft model for speculative decoding                          // NOLINT
+};
+
+struct common_params_evaluate {
+    std::string eval_str;
+    std::deque<llama_token> eval_tokens;
 };
 
 struct common_params_vocoder {

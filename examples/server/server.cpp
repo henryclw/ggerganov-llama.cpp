@@ -98,6 +98,7 @@ struct slot_params {
 
     struct common_params_sampling sampling;
     struct common_params_speculative speculative;
+    struct common_params_evaluate evaluate;
 
     // OAI-compat fields
     bool        verbose        = false;
@@ -151,6 +152,8 @@ struct slot_params {
             {"speculative.n_max",         speculative.n_max},
             {"speculative.n_min",         speculative.n_min},
             {"speculative.p_min",         speculative.p_min},
+            {"evaluate.eval_str",         evaluate.eval_str},
+            {"evaluate.eval_tokens",      evaluate.eval_tokens},
             {"timings_per_token",         timings_per_token},
             {"post_sampling_probs",       post_sampling_probs},
         };
@@ -242,6 +245,19 @@ struct server_task {
         params.speculative.n_min = std::min(params.speculative.n_max, params.speculative.n_min);
         params.speculative.n_min = std::max(params.speculative.n_min, 2);
         params.speculative.n_max = std::max(params.speculative.n_max, 0);
+
+        params.evaluate.eval_str    = json_value(data, "evaluate.eval_str",    defaults.evaluate.eval_str);
+        params.evaluate.eval_tokens = json_value(data, "evaluate.eval_tokens", defaults.evaluate.eval_tokens);
+
+        // init eval_tokens from eval_str
+        if (params.evaluate.eval_tokens.empty() && !params.evaluate.eval_str.empty()) {
+//            params.evaluate.eval_tokens = std::deque<llama_token>(tokenize_mixed(ctx, params.evaluate.eval_str, false, false));
+            std::vector<llama_token> temp = tokenize_mixed(ctx, params.evaluate.eval_str, false, false);
+            params.evaluate.eval_tokens = std::deque<llama_token> (temp.begin(), temp.end());
+            params.n_predict = params.evaluate.eval_tokens.size();
+//            std::reverse(params.evaluate.eval_tokens.begin(), params.evaluate.eval_tokens.end());
+//            LOG_INF("init eval_tokens from eval_str\n");
+        }
 
         // TODO: add more sanity checks for the input parameters
 
@@ -1968,7 +1984,7 @@ struct server_context {
                     break;
                 }
             }
-
+//            LOG_INF("L1984, max_probs is %d\n", max_probs);
             // set probability for top n_probs tokens
             result.probs.reserve(max_probs);
             for (size_t i = 0; i < std::min(max_probs, n_probs); i++) {
@@ -1980,8 +1996,11 @@ struct server_context {
             }
         } else {
             // TODO: optimize this with min-p optimization
+//            LOG_INF("L1998, idx is %d\n", idx);
             std::vector<llama_token_data> cur = get_token_probabilities(ctx, idx);
 
+//            LOG_INF("L1998, cur.size() is %d\n", cur.size());
+//            LOG_INF("L1998, result.tok is %d\n", result.tok);
             // set probability for sampled token
             for (size_t i = 0; i < n_vocab; i++) {
                 // set probability for sampled token
@@ -1991,6 +2010,7 @@ struct server_context {
                 }
             }
 
+//            LOG_INF("L2009, result.probs.size() is %d\n", result.probs.size());
             // set probability for top n_probs tokens
             result.probs.reserve(n_probs);
             for (size_t i = 0; i < std::min(n_vocab, n_probs); i++) {
@@ -2041,7 +2061,7 @@ struct server_context {
         res->oaicompat_cmpl_id = slot.params.oaicompat_cmpl_id;
 
         // populate res.probs_output
-        if (slot.params.sampling.n_probs > 0) {
+        if (slot.params.sampling.n_probs > 0 || !slot.params.evaluate.eval_str.empty()) {
             res->prob_output = tkn; // copy the token probs
         }
 
@@ -2081,7 +2101,7 @@ struct server_context {
         res->oaicompat_cmpl_id = slot.params.oaicompat_cmpl_id;
 
         // populate res.probs_output
-        if (slot.params.sampling.n_probs > 0) {
+        if (slot.params.sampling.n_probs > 0 || !slot.params.evaluate.eval_str.empty()) {
             if (!slot.params.stream && slot.stop == STOP_TYPE_WORD) {
                 const llama_tokens stop_word_toks = common_tokenize(ctx, slot.stopping_word, false);
 
@@ -2800,6 +2820,7 @@ struct server_context {
         }
 
         SRV_DBG("decoding batch, n_tokens = %d\n", batch.n_tokens);
+//        LOG_INF("L2822, decoding batch, n_tokens = %d\n", batch.n_tokens);
 
         // make sure we're in the right embedding mode
         llama_set_embeddings(ctx, batch_type == 1);
@@ -2890,35 +2911,60 @@ struct server_context {
 
                 completion_token_output result;
                 result.tok          = id;
+                bool eval_remain = (!slot.params.evaluate.eval_tokens.empty()) && (!slot.params.evaluate.eval_str.empty());
+                if (eval_remain) {
+                    result.tok = slot.params.evaluate.eval_tokens.front();
+                    slot.params.evaluate.eval_tokens.pop_front();
+                }
                 result.text_to_send = common_token_to_piece(ctx, result.tok, params_base.special);
                 result.prob         = 1.0f; // TODO: set it here instead of doing inside populate_token_probs
 
-                if (slot.params.sampling.n_probs > 0) {
+                if (slot.params.sampling.n_probs > 0 || !slot.params.evaluate.eval_str.empty()) {
+//                    LOG_INF("L2914 %d\n", result.tok);
                     populate_token_probs(slot, result, slot.params.post_sampling_probs, params_base.special, tok_idx);
+//                    LOG_INF("L2916 %d\n", result.tok);
                 }
 
                 if (!process_token(result, slot)) {
+//                    LOG_INF("L2919\n");
                     // release slot because of stop condition
                     slot.release();
                     slot.print_timings();
                     send_final_response(slot);
                     metrics.on_prediction(slot);
+//                    LOG_INF("L2924, exit with result %d, %f\n", result.tok, result.prob);
                     continue;
                 }
             }
 
             // do speculative decoding
             for (auto & slot : slots) {
-                if (!slot.is_processing() || !slot.can_speculate()) {
+                bool eval_remain = (!slot.params.evaluate.eval_tokens.empty()) && (!slot.params.evaluate.eval_str.empty());
+//                LOG_INF("L2918\n");
+//                LOG_INF("eval_str size is %d\n", slot.params.evaluate.eval_str.size());
+//                LOG_INF("eval_str eval_tokens is %d\n", slot.params.evaluate.eval_tokens.size());
+//                LOG_INF("eval_str is %s\n", slot.params.evaluate.eval_str.c_str());
+//                LOG_INF("eval_str eval_tokens size is %d\n", slot.params.evaluate.eval_tokens.size());
+//                LOG_INF("eval_str eval_tokens[0] is %d\n", slot.params.evaluate.eval_tokens[0]);
+//                LOG_INF("eval_str eval_tokens[-1] is %d\n", slot.params.evaluate.eval_tokens[slot.params.evaluate.eval_tokens.size() - 1]);
+//                LOG_INF("speculative.n_max is %d\n", slot.params.speculative.n_max);
+                if (!slot.is_processing() || (!slot.can_speculate() && slot.params.evaluate.eval_str.empty())) {
+//                    LOG_INF("L2933 exit\n");
                     continue;
                 }
+//                if ((!slot.is_processing() || !slot.can_speculate()) && !eval_remain) {
+//                    LOG_INF("L2935 exit\n");
+//                    continue;
+//                }
 
                 if (slot.state != SLOT_STATE_GENERATING) {
+//                    LOG_INF("L2938 exit\n");
                     continue;
                 }
 
                 // determine the max draft that fits the current slot state
                 int n_draft_max = slot.params.speculative.n_max;
+//                LOG_INF("L2967 n_draft_max is %d\n", n_draft_max);
 
                 // note: n_past is not yet increased for the `id` token sampled above
                 //       also, need to leave space for 1 extra token to allow context shifts
@@ -2932,40 +2978,83 @@ struct server_context {
 
                 if (n_draft_max < slot.params.speculative.n_min) {
                     SLT_DBG(slot, "the max possible draft is too small: %d < %d - skipping speculative decoding\n", n_draft_max, slot.params.speculative.n_min);
+//                    LOG_INF("L2957 exit\n");
 
                     continue;
                 }
 
                 llama_token id = slot.sampled;
+//                LOG_INF("L2979\n");
 
-                struct common_speculative_params params_spec;
-                params_spec.n_draft   = n_draft_max;
-                params_spec.n_reuse   = llama_n_ctx(slot.ctx_dft) - slot.params.speculative.n_max;
-                params_spec.p_min     = slot.params.speculative.p_min;
+                llama_tokens draft;
+                if (eval_remain) {
+//                    draft = slot.params.evaluate.eval_tokens;
+//                    draft = std::vector<llama_token> (slot.params.evaluate.eval_tokens.begin(), slot.params.evaluate.eval_tokens.end());
+                    draft.clear();
+                    for (int ii = 0; ii < n_draft_max && !slot.params.evaluate.eval_tokens.empty(); ii++) {
+                        draft.push_back(slot.params.evaluate.eval_tokens.front());
+                        slot.params.evaluate.eval_tokens.pop_front();
+                    }
+                } else {
+                    struct common_speculative_params params_spec;
+                    params_spec.n_draft   = n_draft_max;
+                    params_spec.n_reuse   = llama_n_ctx(slot.ctx_dft) - slot.params.speculative.n_max;
+                    params_spec.p_min     = slot.params.speculative.p_min;
+                    draft = common_speculative_gen_draft(slot.spec, params_spec, slot.cache_tokens, id);
+                }
 
-                llama_tokens draft = common_speculative_gen_draft(slot.spec, params_spec, slot.cache_tokens, id);
-
+//                LOG_INF("L2999\n");
                 // ignore small drafts
                 if (slot.params.speculative.n_min > (int) draft.size()) {
                     SLT_DBG(slot, "ignoring small draft: %d < %d\n", (int) draft.size(), slot.params.speculative.n_min);
+                    LOG_INF("L2974 exit\n");
 
                     continue;
                 }
+//                LOG_INF("L3006\n");
 
-                // construct the speculation batch
-                common_batch_clear(slot.batch_spec);
-                common_batch_add  (slot.batch_spec, id, slot.n_past, { slot.id }, true);
+                if (eval_remain) {
 
-                for (size_t i = 0; i < draft.size(); ++i) {
-                    common_batch_add(slot.batch_spec, draft[i], slot.n_past + 1 + i, { slot.id }, true);
+                    // construct the eval batch
+                    common_batch_clear(batch);
+//                    LOG_INF("L3013\n");
+                    common_batch_add  (batch, id, slot.n_past, { slot.id }, true);
+//                    LOG_INF("L3015\n");
+                    for (size_t i = 0; i < draft.size(); ++i) {
+                        common_batch_add(batch, draft[i], slot.n_past + 1 + i, { slot.id }, true);
+//                        LOG_INF("L3018 draft i %d is %d\n", i, draft[i]);
+                    }
+//                    LOG_INF("L3020 decoding speculative batch, size = %d\n", batch.n_tokens);
+
+                    llama_decode(ctx, batch);
+                } else {
+
+                    // construct the speculation batch
+                    common_batch_clear(slot.batch_spec);
+//                    LOG_INF("L3027\n");
+                    common_batch_add  (slot.batch_spec, id, slot.n_past, { slot.id }, true);
+//                    LOG_INF("L3029\n");
+                    for (size_t i = 0; i < draft.size(); ++i) {
+                        common_batch_add(slot.batch_spec, draft[i], slot.n_past + 1 + i, { slot.id }, true);
+//                        LOG_INF("L3020 draft i %d is %d\n", i, draft[i]);
+                    }
+//                    LOG_INF("L3034 decoding speculative batch, size = %d\n", slot.batch_spec.n_tokens);
+                    SLT_DBG(slot, "decoding speculative batch, size = %d\n", slot.batch_spec.n_tokens);
+
+                    llama_decode(ctx, slot.batch_spec);
                 }
 
-                SLT_DBG(slot, "decoding speculative batch, size = %d\n", slot.batch_spec.n_tokens);
-
-                llama_decode(ctx, slot.batch_spec);
 
                 // the accepted tokens from the speculation
-                const auto ids = common_sampler_sample_and_accept_n(slot.smpl, ctx, draft);
+                std::vector<llama_token> ids;
+                if (eval_remain) {
+                    ids = common_sampler_sample_and_accept_n(slot.smpl, ctx, draft, false, true);
+//                    LOG_INF("L3003 ids size %d\n", ids.size());
+                } else {
+                    ids = common_sampler_sample_and_accept_n(slot.smpl, ctx, draft, false, false);
+//                    LOG_INF("L3006 ids size %d\n", ids.size());
+                }
+//                LOG_INF("L3031\n");
 
                 slot.n_past    += ids.size();
                 slot.n_decoded += ids.size();
@@ -2973,7 +3062,9 @@ struct server_context {
                 slot.cache_tokens.push_back(id);
                 slot.cache_tokens.insert(slot.cache_tokens.end(), ids.begin(), ids.end() - 1);
 
+//                LOG_INF("L3039\n");
                 llama_kv_cache_seq_rm(ctx, slot.id, slot.n_past, -1);
+//                LOG_INF("L3041\n");
 
                 for (size_t i = 0; i < ids.size(); ++i) {
                     completion_token_output result;
@@ -2982,18 +3073,66 @@ struct server_context {
                     result.text_to_send = common_token_to_piece(ctx, result.tok, params_base.special);
                     result.prob         = 1.0f; // set later
 
+
+                    const int tok_idx = i;
+//                    LOG_INF("L3054, tok_idx is %d, slot.i_batch is %d, i is %d\n", tok_idx, slot.i_batch, i);
+                    std::vector<llama_token_data> cur = get_token_probabilities(ctx, tok_idx);
+//                    LOG_INF("L3042, cur.size() is %d\n", cur.size());
+//                    LOG_INF("L3042, result.tok is %d\n", result.tok);
+                    size_t n_vocab = llama_n_vocab(llama_get_model(ctx));
+                    // set probability for sampled token
+                    for (size_t j = 0; i < n_vocab; j++) {
+                        // set probability for sampled token
+                        if (cur[j].id == result.tok) {
+                            result.prob = cur[j].p;
+//                            LOG_INF("L3038, result.tok is %s, %d: %f, %f\n", result.text_to_send.c_str(), cur[j].id, cur[j].logit, cur[j].p);
+                            break;
+                        }
+                    }
+                    for (size_t j = 0; j < std::min(n_vocab, (size_t)slot.params.sampling.n_probs); j++) {
+                        result.probs.push_back({
+                            cur[j].id,
+                            common_detokenize(ctx, {cur[j].id}, params_base.special),
+                            cur[j].p
+                        });
+                    }
+
+//                    for (int tok_idx_test = 0; tok_idx_test<16; tok_idx_test++) {
+//                        cur = get_token_probabilities(ctx, tok_idx_test);
+//                        // find p_max
+//                        float p_max_v = 0.0;
+//                        int p_max_i = 0;
+//                        for (int i = 0; i < n_vocab; i++) {
+//                            if (cur[i].p > p_max_v) {
+//                                p_max_v = cur[i].p;
+//                                p_max_i = i;
+//                            }
+//                        }
+////                    LOG_INF("L3081, p_max is %s, %d: %f, %f\n", common_token_to_piece(ctx, cur[p_max_i].id, params_base.special).c_str(), cur[p_max_i].id, cur[p_max_i].logit, cur[p_max_i].p);
+//                        LOG_INF("L3082, i is %d, result token is %s, %d: %f, tok_idx_test is %d, p_max is %s, %d: %f, %f\n",
+//                                i,
+//                                result.text_to_send.c_str(), result.tok, result.prob,
+//                                tok_idx_test,
+//                                common_token_to_piece(ctx, cur[p_max_i].id, params_base.special).c_str(),
+//                                cur[p_max_i].id, cur[p_max_i].logit, cur[p_max_i].p);
+//                    }
                     // TODO: set result.probs
 
-                    if (!process_token(result, slot)) {
+                    if (!process_token(result, slot) && !eval_remain) {
+//                        LOG_INF("L3061 eval_remain %s, eval_str empty %s, eval_tokens size %d\n", eval_remain?"true":"false", slot.params.evaluate.eval_str.empty()?"true":"false", slot.params.evaluate.eval_tokens.size());
                         // release slot because of stop condition
                         slot.release();
                         slot.print_timings();
                         send_final_response(slot);
                         metrics.on_prediction(slot);
+//                        LOG_INF("L3067, exit with result %d, %f\n", result.tok, result.prob);
                         break;
                     }
                 }
 
+//                for (int i=0; i < (int) ids.size() - 1; i++) {
+//                    slot.params.evaluate.eval_tokens.pop_back();
+//                }
                 SLT_DBG(slot, "accepted %d/%d draft tokens, new n_past = %d\n", (int) ids.size() - 1, (int) draft.size(), slot.n_past);
             }
         }
