@@ -3228,7 +3228,7 @@ struct server_context {
                 // ignore small drafts
                 if (slot.params.speculative.n_min > (int) draft.size()) {
                     SLT_DBG(slot, "ignoring small draft: %d < %d\n", (int) draft.size(), slot.params.speculative.n_min);
-                    LOG_INF("L2974 exit\n");
+//                    LOG_INF("L2974 exit\n");
 
                     continue;
                 }
