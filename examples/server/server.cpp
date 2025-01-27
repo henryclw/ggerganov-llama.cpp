@@ -1445,6 +1445,10 @@ struct server_queue {
     int post(server_task task, bool front = false) {
         std::unique_lock<std::mutex> lock(mutex_tasks);
         GGML_ASSERT(task.id != -1);
+        // if this is cancel task make sure to clean up pending tasks
+        if (task.type == SERVER_TASK_TYPE_CANCEL) {
+            cleanup_pending_task(task.id_target);
+        }
         QUE_DBG("new task, id = %d, front = %d\n", task.id, front);
         if (front) {
             queue_tasks.push_front(std::move(task));
@@ -1461,6 +1465,10 @@ struct server_queue {
         for (auto & task : tasks) {
             if (task.id == -1) {
                 task.id = id++;
+            }
+            // if this is cancel task make sure to clean up pending tasks
+            if (task.type == SERVER_TASK_TYPE_CANCEL) {
+                cleanup_pending_task(task.id_target);
             }
             QUE_DBG("new task, id = %d/%d, front = %d\n", task.id, (int) tasks.size(), front);
             if (front) {
@@ -1562,6 +1570,20 @@ struct server_queue {
             }
         }
     }
+
+private:
+    void cleanup_pending_task(int id_target) {
+        // no need lock because this is called exclusively by post()
+        auto rm_func = [id_target](const server_task & task) {
+            return task.id_target == id_target;
+        };
+        queue_tasks.erase(
+            std::remove_if(queue_tasks.begin(),          queue_tasks.end(),          rm_func),
+            queue_tasks.end());
+        queue_tasks_deferred.erase(
+            std::remove_if(queue_tasks_deferred.begin(), queue_tasks_deferred.end(), rm_func),
+            queue_tasks_deferred.end());
+    }
 };
 
 struct server_response {
@@ -1597,6 +1619,12 @@ struct server_response {
 
         std::unique_lock<std::mutex> lock(mutex_results);
         waiting_task_ids.erase(id_task);
+        // make sure to clean up all pending results
+        queue_results.erase(
+            std::remove_if(queue_results.begin(), queue_results.end(), [id_task](const server_task_result_ptr & res) {
+                return res->id == id_task;
+            }),
+            queue_results.end());
     }
 
     void remove_waiting_task_ids(const std::unordered_set<int> & id_tasks) {
@@ -1616,7 +1644,7 @@ struct server_response {
                 return !queue_results.empty();
             });
 
-            for (int i = 0; i < (int) queue_results.size(); i++) {
+            for (size_t i = 0; i < queue_results.size(); i++) {
                 if (id_tasks.find(queue_results[i]->id) != id_tasks.end()) {
                     server_task_result_ptr res = std::move(queue_results[i]);
                     queue_results.erase(queue_results.begin() + i);
@@ -1633,12 +1661,6 @@ struct server_response {
     server_task_result_ptr recv_with_timeout(const std::unordered_set<int> & id_tasks, int timeout) {
         while (true) {
             std::unique_lock<std::mutex> lock(mutex_results);
-            bool cr_res = condition_results.wait_for(lock, std::chrono::seconds(timeout), [&]{
-                return !queue_results.empty();
-            });
-            if (!cr_res) {
-                return nullptr;
-            }
 
             for (int i = 0; i < (int) queue_results.size(); i++) {
                 if (id_tasks.find(queue_results[i]->id) != id_tasks.end()) {
@@ -1646,6 +1668,11 @@ struct server_response {
                     queue_results.erase(queue_results.begin() + i);
                     return res;
                 }
+            }
+
+            std::cv_status cr_res = condition_results.wait_for(lock, std::chrono::seconds(timeout));
+            if (cr_res == std::cv_status::timeout) {
+                return nullptr;
             }
         }
 
@@ -2398,8 +2425,8 @@ struct server_context {
 
             server_task task(SERVER_TASK_TYPE_CANCEL);
             task.id_target = id_task;
-            cancel_tasks.push_back(task);
             queue_results.remove_waiting_task_id(id_task);
+            cancel_tasks.push_back(task);
         }
         // push to beginning of the queue, so it has highest priority
         queue_tasks.post(cancel_tasks, true);
