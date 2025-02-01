@@ -181,6 +181,10 @@ class Opt {
             }
         }
 
+        if (model_.empty()){
+            return 1;
+        }
+
         return 0;
     }
 
@@ -350,7 +354,11 @@ class HttpClient {
         data.file_size = set_resume_point(output_file_partial);
         set_progress_options(progress, data);
         set_headers(headers);
-        perform(url);
+        CURLcode res = perform(url);
+        if (res != CURLE_OK){
+            printe("Fetching resource '%s' failed: %s\n", url.c_str(), curl_easy_strerror(res));
+            return 1;
+        }
         if (!output_file.empty()) {
             std::filesystem::rename(output_file_partial, output_file);
         }
@@ -415,16 +423,12 @@ class HttpClient {
         }
     }
 
-    void perform(const std::string & url) {
-        CURLcode res;
+    CURLcode perform(const std::string & url) {
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_DEFAULT_PROTOCOL, "https");
         curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
-        res = curl_easy_perform(curl);
-        if (res != CURLE_OK) {
-            printe("curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-        }
+        return curl_easy_perform(curl);
     }
 
     static std::string human_readable_time(double seconds) {
@@ -669,6 +673,31 @@ class LlamaData {
         return download(blob_url, bn, true, headers);
     }
 
+    int github_dl(const std::string & model, const std::string & bn) {
+        std::string  repository = model;
+        std::string  branch     = "main";
+        const size_t at_pos     = model.find('@');
+        if (at_pos != std::string::npos) {
+            repository = model.substr(0, at_pos);
+            branch     = model.substr(at_pos + 1);
+        }
+
+        const std::vector<std::string> repo_parts = string_split(repository, "/");
+        if (repo_parts.size() < 3) {
+            printe("Invalid GitHub repository format\n");
+            return 1;
+        }
+
+        const std::string & org          = repo_parts[0];
+        const std::string & project      = repo_parts[1];
+        std::string         url          = "https://raw.githubusercontent.com/" + org + "/" + project + "/" + branch;
+        for (size_t i = 2; i < repo_parts.size(); ++i) {
+            url += "/" + repo_parts[i];
+        }
+
+        return download(url, bn, true);
+    }
+
     std::string basename(const std::string & path) {
         const size_t pos = path.find_last_of("/\\");
         if (pos == std::string::npos) {
@@ -697,15 +726,20 @@ class LlamaData {
         }
 
         const std::string bn = basename(model_);
-        if (string_starts_with(model_, "hf://") || string_starts_with(model_, "huggingface://")) {
+        if (string_starts_with(model_, "hf://") || string_starts_with(model_, "huggingface://") ||
+            string_starts_with(model_, "hf.co/")) {
+            rm_until_substring(model_, "hf.co/");
             rm_until_substring(model_, "://");
             ret = huggingface_dl(model_, bn);
-        } else if (string_starts_with(model_, "hf.co/")) {
-            rm_until_substring(model_, "hf.co/");
-            ret = huggingface_dl(model_, bn);
-        } else if (string_starts_with(model_, "https://")) {
+        } else if ((string_starts_with(model_, "https://") || string_starts_with(model_, "http://")) &&
+                   !string_starts_with(model_, "https://ollama.com/library/")) {
             ret = download(model_, bn, true);
+        } else if (string_starts_with(model_, "github:") || string_starts_with(model_, "github://")) {
+            rm_until_substring(model_, "github:");
+            rm_until_substring(model_, "://");
+            ret = github_dl(model_, bn);
         } else {  // ollama:// or nothing
+            rm_until_substring(model_, "ollama.com/library/");
             rm_until_substring(model_, "://");
             ret = ollama_dl(model_, bn);
         }
