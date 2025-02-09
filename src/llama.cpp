@@ -10021,6 +10021,7 @@ int32_t llama_chat_apply_template(
 
     std::string formatted_chat;
     llm_chat_template detected_tmpl = llm_chat_detect_template(curr_tmpl);
+    LLAMA_LOG_INFO("detected_tmpl is %d\n", detected_tmpl);
     if (detected_tmpl == LLM_CHAT_TEMPLATE_UNKNOWN) {
         return -1;
     }
