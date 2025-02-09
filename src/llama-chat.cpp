@@ -177,6 +177,11 @@ int32_t llm_chat_apply_template(
     llm_chat_template tmpl,
     const std::vector<const llama_chat_message *> & chat,
     std::string & dest, bool add_ass) {
+    std::string last_role(chat.back()->role);
+    bool last_is_assistant = last_role == "assistant";
+    if (last_is_assistant) {
+        add_ass = false;
+    }
     // Taken from the research: https://github.com/ggerganov/llama.cpp/issues/5527
     std::stringstream ss;
     if (tmpl == LLM_CHAT_TEMPLATE_CHATML) {
@@ -485,7 +490,10 @@ int32_t llm_chat_apply_template(
             } else if (role == "user") {
                 ss << LU8("<｜User｜>") << message->content;
             } else if (role == "assistant") {
-                ss << LU8("<｜Assistant｜>") << message->content << LU8("<｜end▁of▁sentence｜>");
+                ss << LU8("<｜Assistant｜>") << message->content;
+                if (message != chat.back()) {
+                    ss << LU8("<｜end▁of▁sentence｜>");
+                }
             }
         }
         if (add_ass) {
