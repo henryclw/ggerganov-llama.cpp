@@ -187,7 +187,10 @@ int32_t llm_chat_apply_template(
     if (tmpl == LLM_CHAT_TEMPLATE_CHATML) {
         // chatml template
         for (auto message : chat) {
-            ss << "<|im_start|>" << message->role << "\n" << message->content << "<|im_end|>\n";
+            ss << "<|im_start|>" << message->role << "\n" << message->content;
+            if (!last_is_assistant || message != chat.back()) {
+                ss << "<|im_end|>\n";
+            }
         }
         if (add_ass) {
             ss << "<|im_start|>assistant\n";
@@ -491,6 +494,7 @@ int32_t llm_chat_apply_template(
                 ss << LU8("<｜User｜>") << message->content;
             } else if (role == "assistant") {
                 ss << LU8("<｜Assistant｜>") << message->content;
+                // use last_is_assistant instead?
                 if (message != chat.back()) {
                     ss << LU8("<｜end▁of▁sentence｜>");
                 }
