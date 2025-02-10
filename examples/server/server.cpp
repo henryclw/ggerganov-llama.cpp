@@ -3498,8 +3498,8 @@ static void log_server_request(const httplib::Request & req, const httplib::Resp
 
     SRV_INF("request: %s %s %s %d\n", req.method.c_str(), req.path.c_str(), req.remote_addr.c_str(), res.status);
 
-    SRV_DBG("request:  %s\n", req.body.c_str());
-    SRV_DBG("response: %s\n", res.body.c_str());
+    SRV_INF("HTTP request:  %s\n", req.body.c_str());
+    SRV_DBG("HTTP response: %s\n", res.body.c_str());
 }
 
 std::function<void(int)> shutdown_handler;
