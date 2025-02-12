@@ -178,11 +178,11 @@ static ggml_cuda_device_info ggml_cuda_init() {
         int major_version = 0;
         size_t version_length = 0;
         if (rocblas_get_version_string_size(&version_length) == rocblas_status_success) {
-            std::string version(version_length, '\0');
+            std::vector<char> version(version_length+1, '\0');
             if (rocblas_get_version_string(version.data(), version.size()) == rocblas_status_success) {
-                version.resize(::strlen(version.c_str()));
+                version.resize(::strlen(version.data()));
                 int parsed_value = 0;
-                if (std::from_chars(version.c_str(), version.c_str() + version.length(), parsed_value).ec == std::errc()) {
+                if (std::from_chars(version.data(), version.data() + version.size(), parsed_value).ec == std::errc()) {
                     major_version = parsed_value;
                 }
             }
@@ -2840,7 +2840,7 @@ bool ggml_backend_cuda_register_host_buffer(void * buffer, size_t size) {
         return false;
     }
 
-#if CUDART_VERSION >= 11100 || defined(GGML_USE_MUSA)
+#if CUDART_VERSION >= 11010 || defined(GGML_USE_MUSA)
     cudaError_t err = cudaHostRegister(buffer, size, cudaHostRegisterPortable | cudaHostRegisterReadOnly);
     if (err != cudaSuccess) {
         // clear the error
@@ -2852,8 +2852,10 @@ bool ggml_backend_cuda_register_host_buffer(void * buffer, size_t size) {
     }
     return true;
 #else
+    GGML_UNUSED(buffer);
+    GGML_UNUSED(size);
     return false;
-#endif
+#endif // CUDART_VERSION >= 11010 || defined(GGML_USE_MUSA)
 }
 
 void ggml_backend_cuda_unregister_host_buffer(void * buffer) {
