@@ -167,6 +167,7 @@ struct vk_device_struct {
     uint32_t subgroup_size;
     uint32_t shader_core_count;
     bool uma;
+    bool prefer_host_memory;
     bool float_controls_rte_fp16;
 
     bool subgroup_size_control;
@@ -1294,7 +1295,9 @@ static vk_buffer ggml_vk_create_buffer_check(vk_device& device, size_t size, vk:
 static vk_buffer ggml_vk_create_buffer_device(vk_device& device, size_t size) {
     vk_buffer buf;
     try {
-        if (device->uma) {
+        if (device->prefer_host_memory) {
+            buf = ggml_vk_create_buffer(device, size, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, vk::MemoryPropertyFlagBits::eDeviceLocal);
+        } else if (device->uma) {
             // Fall back to host memory type
             buf = ggml_vk_create_buffer(device, size, vk::MemoryPropertyFlagBits::eDeviceLocal, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
         } else {
@@ -2199,6 +2202,9 @@ static vk_device ggml_vk_get_device(size_t idx) {
         device->physical_device = physical_devices[dev_num];
         const std::vector<vk::ExtensionProperties> ext_props = device->physical_device.enumerateDeviceExtensionProperties();
 
+        const char* GGML_VK_PREFER_HOST_MEMORY = getenv("GGML_VK_PREFER_HOST_MEMORY");
+        device->prefer_host_memory = GGML_VK_PREFER_HOST_MEMORY != nullptr;
+
         bool fp16_storage = false;
         bool fp16_compute = false;
         bool maintenance4_support = false;
@@ -2787,13 +2793,11 @@ static void ggml_vk_print_gpu_info(size_t idx) {
 static bool ggml_vk_instance_validation_ext_available(const std::vector<vk::ExtensionProperties>& instance_extensions);
 static bool ggml_vk_instance_portability_enumeration_ext_available(const std::vector<vk::ExtensionProperties>& instance_extensions);
 
-void ggml_vk_instance_init() {
+static void ggml_vk_instance_init() {
     if (vk_instance_initialized) {
         return;
     }
     VK_LOG_DEBUG("ggml_vk_instance_init()");
-
-    vk_instance_initialized = true;
 
     uint32_t api_version = vk::enumerateInstanceVersion();
 
@@ -2845,6 +2849,7 @@ void ggml_vk_instance_init() {
         GGML_LOG_DEBUG("ggml_vulkan: Validation layers enabled\n");
     }
     vk_instance.instance = vk::createInstance(instance_create_info);
+    vk_instance_initialized = true;
 
     size_t num_available_devices = vk_instance.instance.enumeratePhysicalDevices().size();
 
@@ -2869,7 +2874,7 @@ void ggml_vk_instance_init() {
         // Make sure at least one device exists
         if (devices.empty()) {
             std::cerr << "ggml_vulkan: Error: No devices found." << std::endl;
-            GGML_ABORT("fatal error");
+            return;
         }
 
         // Default to using all dedicated GPUs
@@ -8344,8 +8349,13 @@ ggml_backend_reg_t ggml_backend_vk_reg() {
         /* .iface       = */ ggml_backend_vk_reg_i,
         /* .context     = */ nullptr,
     };
-
-    return &reg;
+    try {
+        ggml_vk_instance_init();
+        return &reg;
+    } catch (const vk::SystemError& e) {
+        VK_LOG_DEBUG("ggml_backend_vk_reg() -> Error: System error: " << e.what());
+        return nullptr;
+    }
 }
 
 // Extension availability
