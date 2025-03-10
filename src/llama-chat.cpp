@@ -285,7 +285,10 @@ int32_t llm_chat_apply_template(
     } else if (tmpl == LLM_CHAT_TEMPLATE_PHI_4) {
         // chatml template
         for (auto message : chat) {
-            ss << "<|im_start|>" << message->role << "<|im_sep|>" << message->content << "<|im_end|>";
+            ss << "<|im_start|>" << message->role << "<|im_sep|>" << message->content;
+            if (!last_is_assistant || message != chat.back()) {
+                ss << "<|im_end|>\n";
+            }
         }
         if (add_ass) {
             ss << "<|im_start|>assistant<|im_sep|>";
